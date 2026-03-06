@@ -1,0 +1,36 @@
+<!-- 
+  BuildEstimate.Core.csproj — The Core Project File
+  
+  WHAT THIS IS:
+    This is the project file for the Core layer.
+    It tells .NET: "This project targets .NET 8, and needs these packages."
+  
+  WHY IT'S SO SIMPLE:
+    Core has ZERO external dependencies. No Entity Framework, no ASP.NET,
+    no database libraries. Just pure C# classes.
+    
+    This is BY DESIGN — Core should never depend on infrastructure.
+    If you can't compile Core without a database, your architecture is wrong.
+    
+  JERP EQUIVALENT: JERP.Core.csproj
+-->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Authors>Julio Cesar Mendez Tobar</Authors>
+    <Company>Julio Cesar Mendez Tobar</Company>
+    <Product>BuildEstimate — Construction Estimating Software</Product>
+    <Copyright>Copyright © 2026 Julio Cesar Mendez Tobar. All Rights Reserved.</Copyright>
+  </PropertyGroup>
+
+  <!-- 
+    Core has NO NuGet packages!
+    It only uses built-in .NET types.
+    The [Required], [MaxLength], [Table] attributes come from
+    System.ComponentModel.DataAnnotations which is built into .NET.
+  -->
+
+</Project>

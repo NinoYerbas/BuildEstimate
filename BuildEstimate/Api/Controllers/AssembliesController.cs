@@ -1,0 +1,458 @@
+/*
+ * BuildEstimate — Construction Estimating Software
+ * Copyright (c) 2026 Julio Cesar Mendez Tobar. All Rights Reserved.
+ */
+
+// ============================================================================
+// ASSEMBLIES CONTROLLER — Template Management + Explosion Engine
+// ============================================================================
+
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using BuildEstimate.Application.DTOs;
+using BuildEstimate.Core.Entities;
+using BuildEstimate.Infrastructure.Data;
+
+namespace BuildEstimate.Api.Controllers;
+
+[Route("api/v1/assemblies")]
+[AllowAnonymous]
+public class AssembliesController : BaseApiController
+{
+    private readonly BuildEstimateDbContext _context;
+    private readonly ILogger<AssembliesController> _logger;
+
+    public AssembliesController(
+        BuildEstimateDbContext context,
+        ILogger<AssembliesController> logger)
+    {
+        _context = context;
+        _logger = logger;
+    }
+
+    // GET /api/v1/assemblies?category=Walls
+    [HttpGet]
+    public async Task<IActionResult> GetAssemblies(
+        [FromQuery] string? category = null,
+        [FromQuery] string? search = null)
+    {
+        var query = _context.Assemblies
+            .Where(a => a.IsActive)
+            .AsQueryable();
+
+        if (!string.IsNullOrEmpty(category))
+            query = query.Where(a => a.Category == category);
+
+        if (!string.IsNullOrEmpty(search))
+            query = query.Where(a => a.Name.Contains(search)
+                || (a.AssemblyCode != null && a.AssemblyCode.Contains(search)));
+
+        var assemblies = await query
+            .OrderBy(a => a.Category)
+            .ThenBy(a => a.Name)
+            .Select(a => new AssemblyDto
+            {
+                Id = a.Id,
+                Name = a.Name,
+                AssemblyCode = a.AssemblyCode,
+                Description = a.Description,
+                Category = a.Category,
+                UnitOfMeasure = a.UnitOfMeasure,
+                MaterialCostPerUnit = a.MaterialCostPerUnit,
+                LaborCostPerUnit = a.LaborCostPerUnit,
+                EquipmentCostPerUnit = a.EquipmentCostPerUnit,
+                TotalCostPerUnit = a.TotalCostPerUnit,
+                ComponentCount = a.ComponentCount,
+                IsGlobal = a.IsGlobal,
+                Source = a.Source
+            })
+            .ToListAsync();
+
+        return Ok(assemblies);
+    }
+
+    // GET /api/v1/assemblies/{id} — with all components
+    [HttpGet("{id}")]
+    public async Task<IActionResult> GetAssembly(Guid id)
+    {
+        var assembly = await _context.Assemblies
+            .Where(a => a.Id == id)
+            .Include(a => a.Components)
+                .ThenInclude(c => c.CSISection)
+            .Include(a => a.Components)
+                .ThenInclude(c => c.Trade)
+            .FirstOrDefaultAsync();
+
+        if (assembly == null)
+            return NotFound($"Assembly with ID {id} not found");
+
+        return Ok(new AssemblyDto
+        {
+            Id = assembly.Id,
+            Name = assembly.Name,
+            AssemblyCode = assembly.AssemblyCode,
+            Description = assembly.Description,
+            Category = assembly.Category,
+            UnitOfMeasure = assembly.UnitOfMeasure,
+            MaterialCostPerUnit = assembly.MaterialCostPerUnit,
+            LaborCostPerUnit = assembly.LaborCostPerUnit,
+            EquipmentCostPerUnit = assembly.EquipmentCostPerUnit,
+            TotalCostPerUnit = assembly.TotalCostPerUnit,
+            ComponentCount = assembly.ComponentCount,
+            IsGlobal = assembly.IsGlobal,
+            Source = assembly.Source,
+            Components = assembly.Components
+                .OrderBy(c => c.SortOrder)
+                .Select(c => new AssemblyComponentDto
+                {
+                    Id = c.Id,
+                    CSISectionId = c.CSISectionId,
+                    CSICode = c.CSISection?.Code ?? "",
+                    CSISectionName = c.CSISection?.Name ?? "",
+                    Description = c.Description,
+                    QuantityFactor = c.QuantityFactor,
+                    UnitOfMeasure = c.UnitOfMeasure,
+                    WasteFactor = c.WasteFactor,
+                    MaterialUnitCost = c.MaterialUnitCost,
+                    LaborHoursPerUnit = c.LaborHoursPerUnit,
+                    LaborRate = c.LaborRate,
+                    EquipmentCost = c.EquipmentCost,
+                    TradeId = c.TradeId,
+                    TradeName = c.Trade?.Name,
+                    SortOrder = c.SortOrder
+                })
+                .ToList()
+        });
+    }
+
+    // POST /api/v1/assemblies — Create assembly with components in one call
+    [HttpPost]
+    public async Task<IActionResult> CreateAssembly([FromBody] CreateAssemblyRequest request)
+    {
+        if (request.Components.Count == 0)
+            return BadRequest("Assembly must have at least one component");
+
+        var assembly = new Assembly
+        {
+            Name = request.Name.Trim(),
+            AssemblyCode = request.AssemblyCode?.Trim().ToUpper(),
+            Description = request.Description?.Trim(),
+            Category = request.Category.Trim(),
+            UnitOfMeasure = request.UnitOfMeasure.Trim().ToUpper(),
+            Source = request.Source?.Trim(),
+            CreatedBy = GetCurrentUsername()
+        };
+
+        int sortOrder = 1;
+        foreach (var comp in request.Components)
+        {
+            assembly.Components.Add(new AssemblyComponent
+            {
+                CSISectionId = comp.CSISectionId,
+                Description = comp.Description.Trim(),
+                QuantityFactor = comp.QuantityFactor,
+                UnitOfMeasure = comp.UnitOfMeasure.Trim().ToUpper(),
+                WasteFactor = comp.WasteFactor,
+                MaterialUnitCost = comp.MaterialUnitCost,
+                LaborHoursPerUnit = comp.LaborHoursPerUnit,
+                LaborRate = comp.LaborRate,
+                EquipmentCost = comp.EquipmentCost,
+                TradeId = comp.TradeId,
+                Notes = comp.Notes?.Trim(),
+                SortOrder = sortOrder++
+            });
+        }
+
+        // Calculate summary costs per unit
+        RecalculateAssemblyCosts(assembly);
+
+        _context.Assemblies.Add(assembly);
+        await _context.SaveChangesAsync();
+
+        _logger.LogInformation(
+            "Created assembly: {Name} ({Code}) with {Count} components, ${Cost}/{UOM}",
+            assembly.Name, assembly.AssemblyCode, assembly.ComponentCount,
+            assembly.TotalCostPerUnit, assembly.UnitOfMeasure);
+
+        return Created(new AssemblyDto
+        {
+            Id = assembly.Id,
+            Name = assembly.Name,
+            AssemblyCode = assembly.AssemblyCode,
+            Description = assembly.Description,
+            Category = assembly.Category,
+            UnitOfMeasure = assembly.UnitOfMeasure,
+            MaterialCostPerUnit = assembly.MaterialCostPerUnit,
+            LaborCostPerUnit = assembly.LaborCostPerUnit,
+            EquipmentCostPerUnit = assembly.EquipmentCostPerUnit,
+            TotalCostPerUnit = assembly.TotalCostPerUnit,
+            ComponentCount = assembly.ComponentCount,
+            IsGlobal = assembly.IsGlobal,
+            Source = assembly.Source
+        });
+    }
+
+    // =================================================================
+    // ███████╗██╗  ██╗██████╗ ██╗      ██████╗ ██████╗ ███████╗
+    // ██╔════╝╚██╗██╔╝██╔══██╗██║     ██╔═══██╗██╔══██╗██╔════╝
+    // █████╗   ╚███╔╝ ██████╔╝██║     ██║   ██║██║  ██║█████╗
+    // ██╔══╝   ██╔██╗ ██╔═══╝ ██║     ██║   ██║██║  ██║██╔══╝
+    // ███████╗██╔╝ ██╗██║     ███████╗╚██████╔╝██████╔╝███████╗
+    // ╚══════╝╚═╝  ╚═╝╚═╝     ╚══════╝ ╚═════╝ ╚═════╝ ╚══════╝
+    // =================================================================
+
+    // =====================================================================
+    // POST /api/v1/assemblies/{id}/apply — THE EXPLOSION ENGINE
+    // =====================================================================
+    //
+    // This is the MAGIC. User says:
+    //   "Apply 500 SF of Interior Wall to my estimate"
+    //
+    // The system:
+    //   1. Reads the assembly template (8 components)
+    //   2. For EACH component:
+    //      - Calculates quantity: 500 × QuantityFactor × WasteFactor
+    //      - Calculates material, labor, equipment costs
+    //      - Creates an EstimateLineItem
+    //   3. Recalculates estimate totals (overhead, profit, bid price)
+    //   4. Returns all 8 line items + updated bid price
+    //
+    // One API call → 8 line items → fully priced estimate section.
+    // =====================================================================
+
+    [HttpPost("{id}/apply")]
+    public async Task<IActionResult> ApplyAssembly(Guid id, [FromBody] ApplyAssemblyRequest request)
+    {
+        var assembly = await _context.Assemblies
+            .Include(a => a.Components)
+                .ThenInclude(c => c.CSISection)
+            .Include(a => a.Components)
+                .ThenInclude(c => c.Trade)
+            .FirstOrDefaultAsync(a => a.Id == id);
+
+        if (assembly == null)
+            return NotFound($"Assembly with ID {id} not found");
+
+        if (assembly.Components.Count == 0)
+            return BadRequest("Assembly has no components");
+
+        var estimate = await _context.Estimates
+            .Include(e => e.LineItems)
+            .Include(e => e.Project)
+            .FirstOrDefaultAsync(e => e.Id == request.EstimateId);
+
+        if (estimate == null)
+            return BadRequest($"Estimate with ID {request.EstimateId} not found");
+
+        if (estimate.IsSubmitted)
+            return BadRequest("Cannot add items to a submitted estimate");
+
+        // =====================================================================
+        // THE EXPLOSION LOOP
+        // =====================================================================
+
+        var createdItems = new List<EstimateLineItemDto>();
+        decimal totalMaterial = 0, totalLabor = 0, totalEquipment = 0;
+        int baseSortOrder = estimate.LineItems.Count + 1;
+
+        foreach (var comp in assembly.Components.OrderBy(c => c.SortOrder))
+        {
+            // Step 1: Calculate component quantity
+            // Assembly qty × factor × waste = actual quantity
+            // 500 SF wall × 2.0 (both sides) × 1.10 (10% waste) = 1,100 SF drywall
+            var rawQty = request.Quantity * comp.QuantityFactor;
+            var adjustedQty = rawQty * comp.WasteFactor;
+
+            // Step 2: Look up labor rate if override requested
+            var laborRate = comp.LaborRate;
+            if (request.OverrideLaborRates && comp.TradeId.HasValue && estimate.Project != null)
+            {
+                var projectRate = await _context.LaborRates
+                    .Where(r => r.TradeId == comp.TradeId.Value
+                             && r.County.Contains(estimate.Project.County ?? "")
+                             && r.State == (estimate.Project.State ?? "")
+                             && r.IsActive)
+                    .OrderByDescending(r => r.RateType == "Prevailing" &&
+                        estimate.Project.IsPrevailingWage)
+                    .FirstOrDefaultAsync();
+
+                if (projectRate != null)
+                    laborRate = projectRate.TotalRate;
+            }
+
+            // Step 3: Calculate costs
+            var materialTotal = Math.Round(adjustedQty * comp.MaterialUnitCost, 2);
+            var laborHours = Math.Round(adjustedQty * comp.LaborHoursPerUnit, 2);
+            var laborTotal = Math.Round(laborHours * laborRate, 2);
+            var lineTotal = materialTotal + laborTotal + comp.EquipmentCost;
+
+            // Step 4: Create the line item
+            var lineItem = new EstimateLineItem
+            {
+                EstimateId = request.EstimateId,
+                CSISectionId = comp.CSISectionId,
+                Description = comp.Description,
+                Quantity = Math.Round(rawQty, 4),
+                UnitOfMeasure = comp.UnitOfMeasure,
+                WasteFactor = comp.WasteFactor,
+                AdjustedQuantity = Math.Round(adjustedQty, 4),
+                MaterialUnitCost = comp.MaterialUnitCost,
+                MaterialTotal = materialTotal,
+                LaborHoursPerUnit = comp.LaborHoursPerUnit,
+                LaborHours = laborHours,
+                LaborRate = laborRate,
+                LaborTotal = laborTotal,
+                EquipmentTotal = comp.EquipmentCost,
+                SubcontractorTotal = 0,
+                LineTotal = Math.Round(lineTotal, 2),
+                TakeoffSource = request.Location,
+                Notes = $"From assembly: {assembly.Name}",
+                SortOrder = baseSortOrder++
+            };
+
+            _context.EstimateLineItems.Add(lineItem);
+            estimate.LineItems.Add(lineItem);
+
+            totalMaterial += materialTotal;
+            totalLabor += laborTotal;
+            totalEquipment += comp.EquipmentCost;
+
+            createdItems.Add(new EstimateLineItemDto
+            {
+                Id = lineItem.Id,
+                EstimateId = lineItem.EstimateId,
+                CSISectionId = lineItem.CSISectionId,
+                CSICode = comp.CSISection?.Code ?? "",
+                CSISectionName = comp.CSISection?.Name ?? "",
+                Description = lineItem.Description,
+                Quantity = lineItem.Quantity,
+                UnitOfMeasure = lineItem.UnitOfMeasure,
+                WasteFactor = lineItem.WasteFactor,
+                AdjustedQuantity = lineItem.AdjustedQuantity,
+                MaterialUnitCost = lineItem.MaterialUnitCost,
+                MaterialTotal = lineItem.MaterialTotal,
+                LaborHoursPerUnit = lineItem.LaborHoursPerUnit,
+                LaborHours = lineItem.LaborHours,
+                LaborRate = lineItem.LaborRate,
+                LaborTotal = lineItem.LaborTotal,
+                EquipmentTotal = lineItem.EquipmentTotal,
+                SubcontractorTotal = 0,
+                LineTotal = lineItem.LineTotal,
+                TakeoffSource = lineItem.TakeoffSource,
+                Notes = lineItem.Notes,
+                SortOrder = lineItem.SortOrder
+            });
+        }
+
+        // Step 5: Recalculate estimate totals
+        RecalculateEstimateTotals(estimate);
+
+        await _context.SaveChangesAsync();
+
+        _logger.LogInformation(
+            "Applied assembly '{Name}' × {Qty} {UOM} → {Count} line items, bid now {Bid:C}",
+            assembly.Name, request.Quantity, assembly.UnitOfMeasure,
+            createdItems.Count, estimate.TotalBidPrice);
+
+        return Created(new ApplyAssemblyResultDto
+        {
+            AssemblyName = assembly.Name,
+            Quantity = request.Quantity,
+            UnitOfMeasure = assembly.UnitOfMeasure,
+            LineItemsCreated = createdItems.Count,
+            TotalMaterial = totalMaterial,
+            TotalLabor = totalLabor,
+            TotalEquipment = totalEquipment,
+            TotalDirectCost = totalMaterial + totalLabor + totalEquipment,
+            UpdatedBidPrice = estimate.TotalBidPrice,
+            CreatedLineItems = createdItems
+        });
+    }
+
+    // GET /api/v1/assemblies/categories — List available categories
+    [HttpGet("categories")]
+    public async Task<IActionResult> GetCategories()
+    {
+        var categories = await _context.Assemblies
+            .Where(a => a.IsActive)
+            .GroupBy(a => a.Category)
+            .Select(g => new { Category = g.Key, Count = g.Count() })
+            .OrderBy(c => c.Category)
+            .ToListAsync();
+
+        return Ok(categories);
+    }
+
+    // DELETE /api/v1/assemblies/{id}
+    [HttpDelete("{id}")]
+    public async Task<IActionResult> DeleteAssembly(Guid id)
+    {
+        var assembly = await _context.Assemblies.FindAsync(id);
+        if (assembly == null)
+            return NotFound($"Assembly with ID {id} not found");
+
+        assembly.IsActive = false; // Soft delete
+        await _context.SaveChangesAsync();
+
+        return Ok(new { message = $"Assembly '{assembly.Name}' deactivated" });
+    }
+
+    // =====================================================================
+    // HELPER — Calculate assembly summary costs
+    // =====================================================================
+
+    private static void RecalculateAssemblyCosts(Assembly assembly)
+    {
+        decimal materialPerUnit = 0, laborPerUnit = 0, equipmentPerUnit = 0;
+
+        foreach (var comp in assembly.Components)
+        {
+            var adjFactor = comp.QuantityFactor * comp.WasteFactor;
+            materialPerUnit += adjFactor * comp.MaterialUnitCost;
+            laborPerUnit += adjFactor * comp.LaborHoursPerUnit * comp.LaborRate;
+            equipmentPerUnit += comp.EquipmentCost;
+        }
+
+        assembly.MaterialCostPerUnit = Math.Round(materialPerUnit, 2);
+        assembly.LaborCostPerUnit = Math.Round(laborPerUnit, 2);
+        assembly.EquipmentCostPerUnit = Math.Round(equipmentPerUnit, 2);
+        assembly.TotalCostPerUnit = Math.Round(
+            materialPerUnit + laborPerUnit + equipmentPerUnit, 2);
+        assembly.ComponentCount = assembly.Components.Count;
+    }
+
+    // =====================================================================
+    // ESTIMATE RECALCULATION
+    // =====================================================================
+
+    private void RecalculateEstimateTotals(Estimate estimate)
+    {
+        estimate.MaterialTotal = estimate.LineItems.Sum(li => li.MaterialTotal);
+        estimate.LaborTotal = estimate.LineItems.Sum(li => li.LaborTotal);
+        estimate.EquipmentTotal = estimate.LineItems.Sum(li => li.EquipmentTotal);
+        estimate.SubcontractorTotal = estimate.LineItems.Sum(li => li.SubcontractorTotal);
+
+        estimate.DirectCost = estimate.MaterialTotal + estimate.LaborTotal
+                            + estimate.EquipmentTotal + estimate.SubcontractorTotal;
+
+        estimate.OverheadAmount = Math.Round(
+            estimate.DirectCost * (estimate.OverheadPercent / 100m), 2);
+        var costPlusOverhead = estimate.DirectCost + estimate.OverheadAmount;
+        estimate.ProfitAmount = Math.Round(
+            costPlusOverhead * (estimate.ProfitPercent / 100m), 2);
+        var subtotal = estimate.DirectCost + estimate.OverheadAmount + estimate.ProfitAmount;
+        estimate.BondAmount = Math.Round(subtotal * (estimate.BondPercent / 100m), 2);
+        estimate.TaxAmount = Math.Round(estimate.MaterialTotal * (estimate.TaxPercent / 100m), 2);
+        estimate.ContingencyAmount = Math.Round(estimate.DirectCost * (estimate.ContingencyPercent / 100m), 2);
+        estimate.TotalBidPrice = subtotal + estimate.BondAmount + estimate.TaxAmount + estimate.ContingencyAmount;
+
+        if (estimate.Project?.GrossSquareFootage > 0)
+            estimate.CostPerSquareFoot = Math.Round(
+                estimate.TotalBidPrice / estimate.Project.GrossSquareFootage.Value, 2);
+
+        estimate.LastCalculatedAt = DateTime.UtcNow;
+        if (estimate.Project != null)
+            estimate.Project.BidAmount = estimate.TotalBidPrice;
+    }
+}
