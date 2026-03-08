@@ -49,7 +49,7 @@ namespace BuildEstimate.Infrastructure.Data;
 
 /// <summary>
 /// The database context — maps C# classes to SQL Server tables.
-/// Every <c>DbSet&lt;T&gt;</c> property creates a TABLE in the database.
+/// Every <see cref="Microsoft.EntityFrameworkCore.DbSet{TEntity}"/> property creates a TABLE in the database.
 /// The property NAME becomes the table name (or you override with [Table("...")]).
 /// </summary>
 public class BuildEstimateDbContext : DbContext
