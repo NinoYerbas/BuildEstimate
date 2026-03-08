@@ -31,6 +31,14 @@ using BuildEstimate.Infrastructure.Data;
 
 namespace BuildEstimate.Api.Controllers;
 
+/// <summary>
+/// The central controller for the construction estimating workflow.
+/// Manages estimate CRUD, line item CRUD, and runs the calculation engine
+/// that computes material totals, labor totals, markups, and the final bid price.
+///
+/// Every time a line item is created, updated, or deleted, the full estimate
+/// is recalculated to keep TotalBidPrice in sync with the current line items.
+/// </summary>
 [Route("api/v1/estimates")]
 [AllowAnonymous]  // TODO: Change to [Authorize] when auth is wired
 public class EstimatesController : BaseApiController
@@ -38,6 +46,9 @@ public class EstimatesController : BaseApiController
     private readonly BuildEstimateDbContext _context;
     private readonly ILogger<EstimatesController> _logger;
 
+    /// <summary>
+    /// Constructs the controller with injected database context and logger.
+    /// </summary>
     public EstimatesController(
         BuildEstimateDbContext context,
         ILogger<EstimatesController> logger)
@@ -50,6 +61,12 @@ public class EstimatesController : BaseApiController
     // GET /api/v1/estimates?projectId={id} — List estimates for a project
     // =====================================================================
 
+    /// <summary>
+    /// Returns all estimates, optionally filtered to a specific project.
+    /// Returns a summary DTO (no line items) — use GET /estimates/{id}/lineitems for detail.
+    /// Results are sorted newest-first.
+    /// </summary>
+    /// <param name="projectId">Optional project filter. If omitted, returns all estimates.</param>
     [HttpGet]
     public async Task<IActionResult> GetEstimates([FromQuery] Guid? projectId = null)
     {
@@ -102,6 +119,12 @@ public class EstimatesController : BaseApiController
     // GET /api/v1/estimates/{id} — Get one estimate with all details
     // =====================================================================
 
+    /// <summary>
+    /// Returns a single estimate by ID with all header info and totals.
+    /// Does NOT include line items — use GET /estimates/{id}/lineitems for those.
+    /// Returns HTTP 404 if the estimate does not exist.
+    /// </summary>
+    /// <param name="id">The estimate ID to retrieve.</param>
     [HttpGet("{id}")]
     public async Task<IActionResult> GetEstimate(Guid id)
     {
@@ -151,6 +174,12 @@ public class EstimatesController : BaseApiController
     // POST /api/v1/estimates — Create a new estimate
     // =====================================================================
 
+    /// <summary>
+    /// Creates a new estimate for an existing project.
+    /// All markup percentages can be set at creation time or updated later via PUT /markups.
+    /// The new estimate starts with zero costs — add line items to build up the bid.
+    /// </summary>
+    /// <param name="request">Estimate version, description, and markup percentages.</param>
     [HttpPost]
     public async Task<IActionResult> CreateEstimate([FromBody] CreateEstimateRequest request)
     {
@@ -203,6 +232,12 @@ public class EstimatesController : BaseApiController
     // =====================================================================
     // Changing markups triggers recalculation of the bid price.
 
+    /// <summary>
+    /// Updates the markup percentages for an existing estimate and recalculates the bid price.
+    /// Cannot modify a submitted estimate (IsSubmitted = true).
+    /// </summary>
+    /// <param name="id">The estimate ID to update.</param>
+    /// <param name="request">New markup percentages and optional updated description.</param>
     [HttpPut("{id}/markups")]
     public async Task<IActionResult> UpdateMarkups(Guid id, [FromBody] UpdateEstimateMarkupsRequest request)
     {
@@ -239,6 +274,11 @@ public class EstimatesController : BaseApiController
     // DELETE /api/v1/estimates/{id}
     // =====================================================================
 
+    /// <summary>
+    /// Permanently deletes an estimate and all its line items (via CASCADE delete in the database).
+    /// Cannot delete a submitted estimate.
+    /// </summary>
+    /// <param name="id">The estimate ID to delete.</param>
     [HttpDelete("{id}")]
     public async Task<IActionResult> DeleteEstimate(Guid id)
     {
@@ -268,6 +308,11 @@ public class EstimatesController : BaseApiController
     // GET /api/v1/estimates/{id}/lineitems — All line items for an estimate
     // =====================================================================
 
+    /// <summary>
+    /// Returns all line items for an estimate, sorted by SortOrder then CSI code.
+    /// Includes CSI section and division data from joins.
+    /// </summary>
+    /// <param name="estimateId">The estimate whose line items to return.</param>
     [HttpGet("{estimateId}/lineitems")]
     public async Task<IActionResult> GetLineItems(Guid estimateId)
     {
@@ -324,6 +369,15 @@ public class EstimatesController : BaseApiController
     // This ensures the estimate is ALWAYS in sync with its line items.
     // =====================================================================
 
+    /// <summary>
+    /// Adds a new line item to an estimate and recalculates the full bid price.
+    /// The user provides raw inputs (quantity, unit costs); this method calculates
+    /// adjusted quantity, labor hours, and all totals automatically.
+    /// Returns both the new line item and the updated estimate totals.
+    /// Cannot add items to a submitted estimate.
+    /// </summary>
+    /// <param name="estimateId">The estimate to add the line item to.</param>
+    /// <param name="request">Quantity, unit costs, CSI section, and description for the new line item.</param>
     [HttpPost("{estimateId}/lineitems")]
     public async Task<IActionResult> AddLineItem(Guid estimateId, [FromBody] CreateLineItemRequest request)
     {
@@ -422,6 +476,14 @@ public class EstimatesController : BaseApiController
     // PUT /api/v1/estimates/{estimateId}/lineitems/{lineItemId}
     // =====================================================================
 
+    /// <summary>
+    /// Updates an existing line item's quantities and costs, then recalculates the estimate.
+    /// Returns the updated line item and the recalculated estimate totals.
+    /// Cannot modify items on a submitted estimate.
+    /// </summary>
+    /// <param name="estimateId">The parent estimate ID.</param>
+    /// <param name="lineItemId">The specific line item to update.</param>
+    /// <param name="request">Updated quantities and cost values.</param>
     [HttpPut("{estimateId}/lineitems/{lineItemId}")]
     public async Task<IActionResult> UpdateLineItem(
         Guid estimateId, Guid lineItemId, [FromBody] UpdateLineItemRequest request)
@@ -505,6 +567,13 @@ public class EstimatesController : BaseApiController
     // DELETE /api/v1/estimates/{estimateId}/lineitems/{lineItemId}
     // =====================================================================
 
+    /// <summary>
+    /// Removes a line item from an estimate and recalculates the bid price.
+    /// Returns the updated estimate totals so the UI can refresh immediately.
+    /// Cannot delete items on a submitted estimate.
+    /// </summary>
+    /// <param name="estimateId">The parent estimate ID.</param>
+    /// <param name="lineItemId">The line item to delete.</param>
     [HttpDelete("{estimateId}/lineitems/{lineItemId}")]
     public async Task<IActionResult> DeleteLineItem(Guid estimateId, Guid lineItemId)
     {
@@ -639,6 +708,13 @@ public class EstimatesController : BaseApiController
     // This is like a trial balance grouped by account type in JERP.
     // =====================================================================
 
+    /// <summary>
+    /// Groups all line items by CSI division and returns cost summaries per division.
+    /// Each division summary shows Material + Labor + Equipment + Subcontractor totals
+    /// and the division's percentage of the estimate's DirectCost.
+    /// Useful for the pie chart view and for reviewing where the money is going.
+    /// </summary>
+    /// <param name="id">The estimate to break down.</param>
     [HttpGet("{id}/breakdown")]
     public async Task<IActionResult> GetCostBreakdown(Guid id)
     {
@@ -699,6 +775,12 @@ public class EstimatesController : BaseApiController
     // POST /api/v1/estimates/{id}/recalculate — Force full recalculation
     // =====================================================================
 
+    /// <summary>
+    /// Recalculates ALL totals for an estimate from scratch by re-running the math on every
+    /// line item and then rebuilding all markup amounts. Used when data integrity is in question.
+    /// Safe to call anytime — it's idempotent (running it twice gives the same result).
+    /// </summary>
+    /// <param name="id">The estimate to fully recalculate.</param>
     [HttpPost("{id}/recalculate")]
     public async Task<IActionResult> ForceRecalculate(Guid id)
     {
@@ -737,6 +819,10 @@ public class EstimatesController : BaseApiController
     // HELPER METHODS — Build DTOs from entities
     // =====================================================================
 
+    /// <summary>
+    /// Maps an Estimate entity to an EstimateDto for API responses.
+    /// Centralized here so all endpoints return the same DTO shape.
+    /// </summary>
     private EstimateDto BuildEstimateDto(Estimate estimate)
     {
         return new EstimateDto
@@ -772,6 +858,10 @@ public class EstimatesController : BaseApiController
         };
     }
 
+    /// <summary>
+    /// Maps an EstimateLineItem entity + its CSISection to an EstimateLineItemDto.
+    /// Used when a new line item is returned immediately after creation.
+    /// </summary>
     private static EstimateLineItemDto BuildLineItemDto(EstimateLineItem li, CSISection section)
     {
         return new EstimateLineItemDto

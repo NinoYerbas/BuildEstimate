@@ -49,8 +49,7 @@ namespace BuildEstimate.Infrastructure.Data;
 
 /// <summary>
 /// The database context — maps C# classes to SQL Server tables.
-/// 
-/// Every DbSet<T> property creates a TABLE in the database.
+/// Every <c>DbSet&lt;T&gt;</c> property creates a TABLE in the database.
 /// The property NAME becomes the table name (or you override with [Table("...")]).
 /// </summary>
 public class BuildEstimateDbContext : DbContext
@@ -75,6 +74,11 @@ public class BuildEstimateDbContext : DbContext
     //   to your table (DbContext). You don't go to the kitchen yourself.
     // =====================================================================
 
+    /// <summary>
+    /// Constructs the DbContext with the options (connection string, provider) provided by the DI container.
+    /// The options are registered in Program.cs via builder.Services.AddDbContext().
+    /// </summary>
+    /// <param name="options">Database provider configuration and connection string.</param>
     public BuildEstimateDbContext(DbContextOptions<BuildEstimateDbContext> options) 
         : base(options)
     {
@@ -101,16 +105,37 @@ public class BuildEstimateDbContext : DbContext
     //   public DbSet<Employee> Employees { get; set; }
     // =====================================================================
 
+    /// <summary>Construction projects — the top-level entity. All estimates, takeoffs, and assemblies are linked to a project.</summary>
     public DbSet<Project> Projects { get; set; }
+
+    /// <summary>Estimate versions for a project — multiple estimates per project are supported for comparison.</summary>
     public DbSet<Estimate> Estimates { get; set; }
+
+    /// <summary>Individual cost lines within an estimate — each with material, labor, and equipment costs.</summary>
     public DbSet<EstimateLineItem> EstimateLineItems { get; set; }
+
+    /// <summary>CSI MasterFormat top-level divisions (e.g., Division 03 — Concrete). Pre-seeded, 34 total.</summary>
     public DbSet<CSIDivision> CSIDivisions { get; set; }
+
+    /// <summary>CSI MasterFormat sections and sub-sections (e.g., 03 30 00 — Cast-in-Place Concrete). Pre-seeded.</summary>
     public DbSet<CSISection> CSISections { get; set; }
+
+    /// <summary>Blueprint quantity measurements — raw field measurements before pricing.</summary>
     public DbSet<TakeoffItem> TakeoffItems { get; set; }
+
+    /// <summary>Construction trades (e.g., Carpenter, Electrician). Pre-seeded with 15 common trades.</summary>
     public DbSet<Trade> Trades { get; set; }
+
+    /// <summary>Hourly labor rates by trade, county, and project type (prevailing wage vs. market rate).</summary>
     public DbSet<LaborRate> LaborRates { get; set; }
+
+    /// <summary>Production rates — how many hours per unit a trade needs for a specific CSI section.</summary>
     public DbSet<ProductionRate> ProductionRates { get; set; }
+
+    /// <summary>Assembly templates — pre-built multi-item cost bundles that can be applied to estimates.</summary>
     public DbSet<Assembly> Assemblies { get; set; }
+
+    /// <summary>Individual component lines within an assembly template.</summary>
     public DbSet<AssemblyComponent> AssemblyComponents { get; set; }
 
     // =====================================================================
@@ -129,6 +154,11 @@ public class BuildEstimateDbContext : DbContext
     //   configure Account, JournalEntry, Employee relationships.
     // =====================================================================
 
+    /// <summary>
+    /// Configures database table relationships, indexes, and initial seed data.
+    /// Called by EF Core when creating database migrations.
+    /// This is where foreign key constraints, unique indexes, and cascade delete rules are defined.
+    /// </summary>
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -376,6 +406,11 @@ public class BuildEstimateDbContext : DbContext
     // Every construction estimating software ships with this data.
     // =====================================================================
 
+    /// <summary>
+    /// Seeds all 34 active CSI MasterFormat divisions into the database.
+    /// Each division gets a deterministic GUID based on its code number
+    /// so migrations are repeatable across environments.
+    /// </summary>
     private static void SeedCSIDivisions(ModelBuilder modelBuilder)
     {
         // Helper to create deterministic GUIDs from division codes.
@@ -533,6 +568,11 @@ public class BuildEstimateDbContext : DbContext
     // commonly used ones — about 5-8 per major division. Users can add more.
     // =====================================================================
 
+    /// <summary>
+    /// Seeds commonly used CSI sections (5–8 per major division) into the database.
+    /// Not all possible sections are seeded — just the ones used in 90% of estimates.
+    /// Users can add custom sections as needed.
+    /// </summary>
     private static void SeedCSISections(ModelBuilder modelBuilder)
     {
         // Helper: creates a deterministic GUID from a section code
@@ -729,6 +769,11 @@ public class BuildEstimateDbContext : DbContext
     // Users can add more, but these cover 90% of projects.
     // =====================================================================
 
+    /// <summary>
+    /// Seeds 15 common construction trades into the database.
+    /// Covers the structural, finish, and MEP trades used on most commercial projects.
+    /// Users can add more trades, but these cover 90% of typical project needs.
+    /// </summary>
     private static void SeedTrades(ModelBuilder modelBuilder)
     {
         // Use sequential numbers — trade codes have non-hex chars (R, P, U, etc.)
