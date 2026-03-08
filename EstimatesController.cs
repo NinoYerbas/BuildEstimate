@@ -40,6 +40,14 @@ using BuildEstimate.Infrastructure.Data;
 
 namespace BuildEstimate.Api.Controllers;
 
+/// <summary>
+/// Manages construction takeoff items — field measurements taken from blueprints.
+/// Takeoff items record raw measurements (e.g., 840 SF of wall) plus deductions
+/// (openings for doors and windows) to produce a net quantity ready for pricing.
+///
+/// The key method, <see cref="LinkToEstimate"/>, converts a measured takeoff item
+/// into a fully priced EstimateLineItem and recalculates the estimate's bid price.
+/// </summary>
 [Route("api/v1/takeoff")]
 [AllowAnonymous]
 public class TakeoffController : BaseApiController
@@ -47,6 +55,9 @@ public class TakeoffController : BaseApiController
     private readonly BuildEstimateDbContext _context;
     private readonly ILogger<TakeoffController> _logger;
 
+    /// <summary>
+    /// Constructs the controller with injected database context and logger.
+    /// </summary>
     public TakeoffController(
         BuildEstimateDbContext context,
         ILogger<TakeoffController> logger)
@@ -59,6 +70,13 @@ public class TakeoffController : BaseApiController
     // GET /api/v1/takeoff?projectId={id} — All takeoff items for a project
     // =====================================================================
 
+    /// <summary>
+    /// Returns all takeoff items for a project, with optional filters for drawing sheet
+    /// and unlinked-only items. Results are sorted by drawing sheet then location.
+    /// </summary>
+    /// <param name="projectId">The project whose takeoff items to list.</param>
+    /// <param name="drawingSheet">Optional filter — only return items from this drawing sheet.</param>
+    /// <param name="unlinkedOnly">If true, only return items not yet linked to an estimate.</param>
     [HttpGet]
     public async Task<IActionResult> GetTakeoffItems(
         [FromQuery] Guid projectId,
@@ -114,6 +132,11 @@ public class TakeoffController : BaseApiController
     // GET /api/v1/takeoff/{id} — Single takeoff item
     // =====================================================================
 
+    /// <summary>
+    /// Returns a single takeoff item by its ID, including CSI section and project details.
+    /// Returns HTTP 404 if no item with the given ID exists.
+    /// </summary>
+    /// <param name="id">The takeoff item ID to retrieve.</param>
     [HttpGet("{id}")]
     public async Task<IActionResult> GetTakeoffItem(Guid id)
     {
@@ -172,6 +195,13 @@ public class TakeoffController : BaseApiController
     //
     // =====================================================================
 
+    /// <summary>
+    /// Creates a new takeoff item for a project.
+    /// If dimensions (Length, Width, Height, Depth) are provided instead of a direct quantity,
+    /// the system automatically calculates the quantity based on the UnitOfMeasure.
+    /// Subtracts DeductionQuantity from the gross to produce NetQuantity.
+    /// </summary>
+    /// <param name="request">All fields needed to create the takeoff item including dimensions or direct quantity.</param>
     [HttpPost]
     public async Task<IActionResult> CreateTakeoffItem([FromBody] CreateTakeoffItemRequest request)
     {
@@ -261,6 +291,12 @@ public class TakeoffController : BaseApiController
     // PUT /api/v1/takeoff/{id} — Update a takeoff item
     // =====================================================================
 
+    /// <summary>
+    /// Updates all fields of an existing takeoff item and recalculates its quantity.
+    /// Behaves identically to CreateTakeoffItem but updates an existing record.
+    /// </summary>
+    /// <param name="id">The takeoff item ID to update.</param>
+    /// <param name="request">Updated field values.</param>
     [HttpPut("{id}")]
     public async Task<IActionResult> UpdateTakeoffItem(Guid id, [FromBody] UpdateTakeoffItemRequest request)
     {
@@ -328,6 +364,12 @@ public class TakeoffController : BaseApiController
     // DELETE /api/v1/takeoff/{id}
     // =====================================================================
 
+    /// <summary>
+    /// Deletes a takeoff item. Refuses to delete items that are linked to an estimate
+    /// because deleting them would leave orphaned line items.
+    /// Unlink the item from the estimate first if deletion is needed.
+    /// </summary>
+    /// <param name="id">The takeoff item ID to delete.</param>
     [HttpDelete("{id}")]
     public async Task<IActionResult> DeleteTakeoffItem(Guid id)
     {
@@ -359,6 +401,14 @@ public class TakeoffController : BaseApiController
     // And marks the takeoff as linked.
     // =====================================================================
 
+    /// <summary>
+    /// Links a takeoff item to an estimate by creating a priced EstimateLineItem from it.
+    /// Uses the takeoff's NetQuantity (after deductions) as the line item quantity.
+    /// After creating the line item, recalculates the estimate's total bid price.
+    /// Marks the takeoff item as linked so it doesn't get added twice.
+    /// </summary>
+    /// <param name="id">The takeoff item to link.</param>
+    /// <param name="request">The target estimate, pricing data, and optional overrides.</param>
     [HttpPost("{id}/link-to-estimate")]
     public async Task<IActionResult> LinkToEstimate(
         Guid id,
@@ -472,6 +522,12 @@ public class TakeoffController : BaseApiController
     // GET /api/v1/takeoff/summary?projectId={id} — Project takeoff summary
     // =====================================================================
 
+    /// <summary>
+    /// Returns a summary of all takeoff items for a project, grouped by drawing sheet
+    /// and by CSI section. Shows totals for linked vs. unlinked items so the estimator
+    /// can see how much of the takeoff has been priced.
+    /// </summary>
+    /// <param name="projectId">The project to summarize.</param>
     [HttpGet("summary")]
     public async Task<IActionResult> GetTakeoffSummary([FromQuery] Guid projectId)
     {
@@ -536,6 +592,19 @@ public class TakeoffController : BaseApiController
     //   12 rooms × 70 SF each = 840 SF
     // =====================================================================
 
+    /// <summary>
+    /// Calculates a takeoff quantity from dimensions based on the unit of measure.
+    /// If a direct quantity is provided, it is returned as-is without any calculation.
+    /// If Count is provided along with dimensions, the result is multiplied by Count.
+    /// </summary>
+    /// <param name="uom">Unit of measure code: "SF", "CY", "CF", "LF", "EA", "LS", or "SQ".</param>
+    /// <param name="directQuantity">A pre-calculated quantity entered by the user. If provided, all dimension params are ignored.</param>
+    /// <param name="length">Measured length in feet.</param>
+    /// <param name="width">Measured width in feet.</param>
+    /// <param name="height">Measured height in feet (used for SF wall calculations).</param>
+    /// <param name="depth">Measured depth in feet (used for CY concrete calculations).</param>
+    /// <param name="count">Number of identical items (e.g., 12 identical rooms). Multiplies the calculated unit quantity.</param>
+    /// <returns>The calculated quantity, rounded to 4 decimal places.</returns>
     private static decimal CalculateQuantity(
         string uom,
         decimal? directQuantity,
@@ -601,6 +670,10 @@ public class TakeoffController : BaseApiController
     // ESTIMATE RECALCULATION (same as in EstimatesController)
     // =====================================================================
 
+    /// <summary>
+    /// Recalculates all estimate totals after a line item is added via LinkToEstimate.
+    /// Same calculation engine as EstimatesController.RecalculateEstimateTotals.
+    /// </summary>
     private void RecalculateEstimateTotals(Estimate estimate)
     {
         estimate.MaterialTotal = estimate.LineItems.Sum(li => li.MaterialTotal);
@@ -647,16 +720,40 @@ public class TakeoffController : BaseApiController
 // REQUEST DTO for linking takeoff to estimate
 // =====================================================================
 
+/// <summary>
+/// Data the API receives when linking a takeoff measurement to an estimate.
+/// Includes pricing data (material cost, labor hours/rate) needed to create
+/// the EstimateLineItem from the takeoff's measured quantity.
+/// </summary>
 public class LinkTakeoffToEstimateRequest
 {
+    /// <summary>The estimate to add the new line item to.</summary>
     public Guid EstimateId { get; set; }
+
+    /// <summary>Override the takeoff's CSI section if the work belongs under a different code.</summary>
     public Guid? CSISectionId { get; set; }  // Override takeoff's CSI if needed
+
+    /// <summary>Override the takeoff's description with a more specific line item description.</summary>
     public string? Description { get; set; }  // Override takeoff description
+
+    /// <summary>Waste factor multiplier. 1.00 = no waste, 1.10 = add 10%. Defaults to 1.00.</summary>
     public decimal WasteFactor { get; set; } = 1.00m;
+
+    /// <summary>Material cost per unit (e.g., cost per SF of drywall panels).</summary>
     public decimal MaterialUnitCost { get; set; } = 0;
+
+    /// <summary>Labor hours per unit (from production rate data).</summary>
     public decimal LaborHoursPerUnit { get; set; } = 0;
+
+    /// <summary>All-in hourly labor rate (from labor rate data for this trade/location).</summary>
     public decimal LaborRate { get; set; } = 0;
+
+    /// <summary>Lump-sum equipment cost for this line item.</summary>
     public decimal EquipmentTotal { get; set; } = 0;
+
+    /// <summary>Lump-sum subcontractor cost for this line item.</summary>
     public decimal SubcontractorTotal { get; set; } = 0;
+
+    /// <summary>Optional notes or clarifications about the pricing assumptions used.</summary>
     public string? Notes { get; set; }
 }

@@ -33,12 +33,21 @@ using BuildEstimate.Core.Entities;
 
 namespace BuildEstimate.Api.Controllers;
 
+/// <summary>
+/// Generates presentation-ready reports from calculated estimate data.
+/// All five endpoints are read-only — they never modify any data.
+/// Each report formats the same underlying estimate data for a different audience
+/// (project owner, management, labor planning, comparison analysis, dashboard).
+/// </summary>
 [Route("api/v1/reports")]
 [AllowAnonymous]
 public class ReportsController : BaseApiController
 {
     private readonly BuildEstimateDbContext _context;
 
+    /// <summary>
+    /// Constructs the controller with the EF Core database context injected.
+    /// </summary>
     public ReportsController(BuildEstimateDbContext context)
     {
         _context = context;
@@ -52,6 +61,13 @@ public class ReportsController : BaseApiController
     // Get it wrong → lose the job (too high) or lose money (too low).
     // =====================================================================
 
+    /// <summary>
+    /// Generates the formal Bid Proposal Summary — the document submitted to the project owner.
+    /// Groups line item costs by CSI division, shows the complete markup breakdown,
+    /// and produces the final bid price.
+    /// </summary>
+    /// <param name="estimateId">The estimate to generate a bid proposal for.</param>
+    /// <returns>A structured bid proposal with project info, cost breakdown by division, and final bid price.</returns>
     [HttpGet("bid-summary/{estimateId}")]
     public async Task<IActionResult> GetBidSummary(Guid estimateId)
     {
@@ -59,15 +75,15 @@ public class ReportsController : BaseApiController
             .Include(e => e.Project)
             .Include(e => e.LineItems)
                 .ThenInclude(li => li.CSISection)
-                    .ThenInclude(s => s!.Division)
+                    .ThenInclude(s => s!.Division) // ← need division info for grouping
             .FirstOrDefaultAsync(e => e.Id == estimateId);
 
         if (estimate == null)
             return NotFound($"Estimate with ID {estimateId} not found");
 
-        // Group line items by CSI Division
+        // Group line items by CSI Division to show which trades cost the most
         var divisionSummaries = estimate.LineItems
-            .Where(li => li.CSISection?.Division != null)
+            .Where(li => li.CSISection?.Division != null) // ← only lines with a known CSI division
             .GroupBy(li => new
             {
                 DivCode = li.CSISection!.Division!.Code,
@@ -144,6 +160,13 @@ public class ReportsController : BaseApiController
     // This is what the estimator and project manager review.
     // =====================================================================
 
+    /// <summary>
+    /// Generates the Detailed Cost Report showing every line item with full pricing detail.
+    /// Items are grouped by CSI division and sorted by CSI code within each division.
+    /// Used internally by estimators and project managers for detailed cost review.
+    /// </summary>
+    /// <param name="estimateId">The estimate to generate a detailed cost report for.</param>
+    /// <returns>All line items organized by division with a summary of totals.</returns>
     [HttpGet("detailed-cost/{estimateId}")]
     public async Task<IActionResult> GetDetailedCost(Guid estimateId)
     {
@@ -204,7 +227,7 @@ public class ReportsController : BaseApiController
                 estimate.DirectCost,
                 estimate.TotalBidPrice,
                 estimate.CostPerSquareFoot,
-                TotalLaborHours = estimate.LineItems.Sum(li => li.LaborHours)
+                TotalLaborHours = estimate.LineItems.Sum(li => li.LaborHours) // ← sum across all line items
             }
         });
     }
@@ -220,6 +243,13 @@ public class ReportsController : BaseApiController
     //   = 3 drywall workers for 10 weeks = 30 week-equivalents of payroll
     // =====================================================================
 
+    /// <summary>
+    /// Generates the Labor Analysis report showing total hours and costs by CSI division (trade).
+    /// Includes scheduling estimates showing how many calendar days the labor represents
+    /// for crews of various sizes, plus a weekly payroll estimate.
+    /// </summary>
+    /// <param name="estimateId">The estimate to analyze labor for.</param>
+    /// <returns>Labor hours and costs by division, scheduling estimates, and a payroll preview.</returns>
     [HttpGet("labor-analysis/{estimateId}")]
     public async Task<IActionResult> GetLaborAnalysis(Guid estimateId)
     {
@@ -259,7 +289,7 @@ public class ReportsController : BaseApiController
                 // With a crew of 2, how many calendar days?
                 CalendarDaysWithCrew2 = Math.Ceiling(g.Sum(li => li.LaborHours) / 16m)
             })
-            .OrderByDescending(d => d.TotalHours)
+            .OrderByDescending(d => d.TotalHours) // ← most labor-intensive trades first
             .ToList();
 
         return Ok(new
@@ -272,16 +302,16 @@ public class ReportsController : BaseApiController
             TotalLaborHours = totalLaborHours,
             TotalLaborCost = estimate.LaborTotal,
             AverageLaborRate = totalLaborHours > 0
-                ? Math.Round(estimate.LaborTotal / totalLaborHours, 2) : 0m,
+                ? Math.Round(estimate.LaborTotal / totalLaborHours, 2) : 0m, // ← blended rate across all trades
 
             // Quick scheduling estimate
             Scheduling = new
             {
-                TotalWorkerDays = Math.Ceiling(totalLaborHours / 8m),
+                TotalWorkerDays = Math.Ceiling(totalLaborHours / 8m), // ← 1 worker working 8-hr days
                 WithCrewOf5 = new
                 {
-                    CalendarDays = Math.Ceiling(totalLaborHours / 40m),
-                    Weeks = Math.Ceiling(totalLaborHours / 200m)
+                    CalendarDays = Math.Ceiling(totalLaborHours / 40m),  // ← 5 workers × 8 hrs = 40 hrs/day
+                    Weeks = Math.Ceiling(totalLaborHours / 200m)         // ← 5 workers × 40 hrs/week
                 },
                 WithCrewOf10 = new
                 {
@@ -297,7 +327,7 @@ public class ReportsController : BaseApiController
             {
                 EstimatedWeeklyPayroll = totalLaborHours > 0
                     ? Math.Round(estimate.LaborTotal / Math.Ceiling(totalLaborHours / 200m), 2)
-                    : 0m,
+                    : 0m, // ← total labor ÷ number of weeks at crew of 5
                 Note = "Based on crew of 5 workers, 40 hrs/week"
             }
         });
@@ -310,6 +340,13 @@ public class ReportsController : BaseApiController
     // "Version 1 was $2.1M, Version 2 after VE is $1.85M — 12% savings"
     // =====================================================================
 
+    /// <summary>
+    /// Compares all estimate versions for a given project side-by-side.
+    /// Also calculates version-to-version deltas showing how the bid price evolved
+    /// (e.g., after value engineering or scope changes).
+    /// </summary>
+    /// <param name="projectId">The project whose estimates to compare.</param>
+    /// <returns>All estimate versions plus calculated deltas between consecutive versions.</returns>
     [HttpGet("comparison")]
     public async Task<IActionResult> GetEstimateComparison([FromQuery] Guid projectId)
     {
@@ -320,7 +357,7 @@ public class ReportsController : BaseApiController
         var estimates = await _context.Estimates
             .Where(e => e.ProjectId == projectId)
             .Include(e => e.LineItems)
-            .OrderBy(e => e.Version)
+            .OrderBy(e => e.Version) // ← compare in version order
             .ToListAsync();
 
         if (estimates.Count == 0)
@@ -344,7 +381,7 @@ public class ReportsController : BaseApiController
             e.LastCalculatedAt
         }).ToList();
 
-        // Calculate deltas between versions
+        // Calculate deltas between consecutive versions to show how the bid changed
         var deltas = new List<object>();
         for (int i = 1; i < comparison.Count; i++)
         {
@@ -354,7 +391,7 @@ public class ReportsController : BaseApiController
             {
                 From = prev.Version,
                 To = curr.Version,
-                BidPriceChange = curr.TotalBidPrice - prev.TotalBidPrice,
+                BidPriceChange = curr.TotalBidPrice - prev.TotalBidPrice, // ← positive = more expensive
                 PercentChange = prev.TotalBidPrice > 0
                     ? Math.Round((curr.TotalBidPrice - prev.TotalBidPrice) / prev.TotalBidPrice * 100, 1)
                     : 0m,
@@ -380,6 +417,13 @@ public class ReportsController : BaseApiController
     // EXECUTIVE DASHBOARD — Everything about a project at a glance.
     // =====================================================================
 
+    /// <summary>
+    /// Returns a comprehensive project dashboard with status, estimate summary, takeoff completion,
+    /// and cost breakdown from the most recently calculated estimate.
+    /// Designed for a single-screen executive overview of a project.
+    /// </summary>
+    /// <param name="projectId">The project to generate a dashboard for.</param>
+    /// <returns>Project metadata, estimate totals, takeoff progress, and cost type breakdown.</returns>
     [HttpGet("project-dashboard/{projectId}")]
     public async Task<IActionResult> GetProjectDashboard(Guid projectId)
     {
@@ -396,6 +440,7 @@ public class ReportsController : BaseApiController
             .Where(t => t.ProjectId == projectId)
             .ToListAsync();
 
+        // The most recently calculated estimate is the "current" version
         var latestEstimate = estimates
             .OrderByDescending(e => e.LastCalculatedAt)
             .FirstOrDefault();
@@ -416,7 +461,7 @@ public class ReportsController : BaseApiController
                 project.IsPrevailingWage,
                 project.BidDueDate,
                 DaysUntilBid = project.BidDueDate.HasValue
-                    ? (project.BidDueDate.Value - DateTime.UtcNow).Days
+                    ? (project.BidDueDate.Value - DateTime.UtcNow).Days // ← countdown to bid day
                     : (int?)null
             },
 
@@ -427,19 +472,20 @@ public class ReportsController : BaseApiController
                 LatestBidPrice = latestEstimate?.TotalBidPrice ?? 0,
                 LatestCostPerSF = latestEstimate?.CostPerSquareFoot ?? 0,
                 TotalLineItems = estimates.Sum(e => e.LineItems.Count),
-                HasSubmitted = estimates.Any(e => e.IsSubmitted)
+                HasSubmitted = estimates.Any(e => e.IsSubmitted) // ← has any version been submitted?
             },
 
             Takeoffs = new
             {
                 TotalItems = takeoffs.Count,
                 LinkedItems = takeoffs.Count(t => t.IsLinkedToEstimate),
-                UnlinkedItems = takeoffs.Count(t => !t.IsLinkedToEstimate),
+                UnlinkedItems = takeoffs.Count(t => !t.IsLinkedToEstimate), // ← measurements not yet priced
                 CompletionPercent = takeoffs.Count > 0
                     ? Math.Round((decimal)takeoffs.Count(t => t.IsLinkedToEstimate) / takeoffs.Count * 100, 1)
-                    : 0m
+                    : 0m // ← what % of takeoff has been converted to estimate lines?
             },
 
+            // Cost mix breakdown from the latest estimate — used for pie charts in the UI
             CostBreakdown = latestEstimate != null ? new
             {
                 Material = new { Total = latestEstimate.MaterialTotal, Percent = latestEstimate.DirectCost > 0 ? Math.Round(latestEstimate.MaterialTotal / latestEstimate.DirectCost * 100, 1) : 0m },

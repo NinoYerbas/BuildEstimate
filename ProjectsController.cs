@@ -40,7 +40,6 @@ namespace BuildEstimate.Api.Controllers;
 /// <summary>
 /// CSI MasterFormat code browsing and search.
 /// Read-only — CSI codes are seeded data, not user-created.
-/// 
 /// JERP EQUIVALENT: Like a read-only version of AccountsController
 /// where the Chart of Accounts is pre-loaded and users browse it.
 /// </summary>
@@ -51,6 +50,9 @@ public class CSIMasterFormatController : BaseApiController
     private readonly BuildEstimateDbContext _context;
     private readonly ILogger<CSIMasterFormatController> _logger;
 
+    /// <summary>
+    /// Constructs the controller with injected database context and logger.
+    /// </summary>
     public CSIMasterFormatController(
         BuildEstimateDbContext context,
         ILogger<CSIMasterFormatController> logger)
@@ -78,8 +80,11 @@ public class CSIMasterFormatController : BaseApiController
     // =====================================================================
 
     /// <summary>
-    /// Get all CSI MasterFormat divisions.
+    /// Returns all CSI MasterFormat divisions, optionally filtered to active-only.
+    /// Each division includes a count of its active sections for the tree UI.
+    /// Results are sorted in the official CSI numerical order.
     /// </summary>
+    /// <param name="activeOnly">When true (default), returns only active divisions.</param>
     [HttpGet("divisions")]
     public async Task<IActionResult> GetDivisions([FromQuery] bool activeOnly = true)
     {
@@ -125,8 +130,11 @@ public class CSIMasterFormatController : BaseApiController
     // =====================================================================
 
     /// <summary>
-    /// Get a division and all its sections.
+    /// Returns a division plus all of its top-level sections.
+    /// Sub-sections are not included — use GetSection for sub-section drill-down.
+    /// Commonly used when the user clicks on a division in the code browser.
     /// </summary>
+    /// <param name="id">The division ID to retrieve.</param>
     [HttpGet("divisions/{id}")]
     public async Task<IActionResult> GetDivision(Guid id)
     {
@@ -177,8 +185,10 @@ public class CSIMasterFormatController : BaseApiController
     // =====================================================================
 
     /// <summary>
-    /// Get a section with its parent division info and any sub-sections.
+    /// Returns a single CSI section with its parent division info and any sub-sections.
+    /// Used when an estimator clicks on a section code to see the full detail and sub-items.
     /// </summary>
+    /// <param name="id">The section ID to retrieve.</param>
     [HttpGet("sections/{id}")]
     public async Task<IActionResult> GetSection(Guid id)
     {
@@ -248,8 +258,12 @@ public class CSIMasterFormatController : BaseApiController
     // =====================================================================
 
     /// <summary>
-    /// Search CSI codes by name or code number.
+    /// Full-text search across all CSI codes and names.
+    /// Searches both division names and section names/codes for the query string.
+    /// Returns up to 20 matching sections and 10 matching divisions.
+    /// Query must be at least 2 characters to prevent too-broad results.
     /// </summary>
+    /// <param name="q">The search term, e.g., "drywall" or "03 30".</param>
     [HttpGet("search")]
     public async Task<IActionResult> SearchCSI([FromQuery] string q)
     {
@@ -328,8 +342,10 @@ public class CSIMasterFormatController : BaseApiController
     // =====================================================================
 
     /// <summary>
-    /// Get the complete CSI tree for sidebar navigation.
-    /// Returns divisions with nested sections.
+    /// Returns the complete CSI hierarchy as a nested tree structure for sidebar navigation.
+    /// Each division contains its sections as child nodes; each section contains its sub-sections.
+    /// This is the same data as the divisions/sections endpoints but pre-assembled for direct use
+    /// in a collapsible tree UI component.
     /// </summary>
     [HttpGet("tree")]
     public async Task<IActionResult> GetCSITree()
